@@ -2,8 +2,7 @@
 Sustainability Framework Analyzer - Streamlit App
 Deploy to Streamlit Cloud for free public access.
 
-Uses spacy-universal-sentence-encoder with nlp.similarity() - 
-the exact same method from the Jupyter notebook.
+Uses sentence-transformers for semantic similarity calculation.
 """
 
 import streamlit as st
@@ -12,6 +11,7 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from io import BytesIO
+from sentence_transformers import SentenceTransformer, util
 
 # Page config
 st.set_page_config(
@@ -486,18 +486,19 @@ FRAMEWORK_REQUIREMENTS = {
 # ============================================
 
 @st.cache_resource
-def load_nlp_model():
-    """Load the spacy universal sentence encoder model (cached)"""
-    import spacy_universal_sentence_encoder
-    return spacy_universal_sentence_encoder.load_model('en_use_lg')
+def load_model():
+    """Load the sentence transformer model (cached)"""
+    # Using all-mpnet-base-v2 - high quality semantic similarity model
+    # Alternative: 'all-MiniLM-L6-v2' for faster but slightly less accurate results
+    return SentenceTransformer('all-mpnet-base-v2')
 
 
 def extract_text_from_pdf(pdf_file):
     """Extract text from PDF page by page using pymupdf"""
-    import pymupdf
+    import fitz  # pymupdf
     
     pdf_bytes = pdf_file.read()
-    doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     
     text_list = []
     for page_num, page in enumerate(doc):
@@ -510,15 +511,15 @@ def extract_text_from_pdf(pdf_file):
 
 def document_similarity(text_list, selected_frameworks, progress_bar=None):
     """
-    Calculate similarity using spacy nlp.similarity() - 
-    the exact same method from the Jupyter notebook.
+    Calculate similarity using sentence-transformers.
+    Uses cosine similarity between embeddings (same approach as spacy nlp.similarity).
     """
-    nlp = load_nlp_model()
+    model = load_model()
     
     results = []
     
     # Pre-compute document embeddings
-    doc_nlps = [nlp(text) for text in text_list]
+    doc_embeddings = model.encode(text_list, convert_to_tensor=True, show_progress_bar=False)
     
     # Count total steps for progress
     total_steps = sum(
@@ -538,13 +539,14 @@ def document_similarity(text_list, selected_frameworks, progress_bar=None):
         for topic, requirements in topics.items():
             similarities = []
             
-            for requirement in requirements:
-                # Create spacy doc for requirement (same as notebook)
-                curr_nlp = nlp(requirement)
-                
-                for doc_nlp in doc_nlps:
-                    # Use nlp.similarity() - the exact method from the notebook
-                    similarity = curr_nlp.similarity(doc_nlp)
+            # Encode all requirements for this topic
+            req_embeddings = model.encode(requirements, convert_to_tensor=True, show_progress_bar=False)
+            
+            # Calculate cosine similarity between each requirement and each document page
+            for req_emb in req_embeddings:
+                for doc_emb in doc_embeddings:
+                    # Cosine similarity (same as nlp.similarity() in spacy)
+                    similarity = util.cos_sim(req_emb, doc_emb).item()
                     similarities.append(similarity)
             
             # Calculate mean similarity for this topic
@@ -781,7 +783,7 @@ def main():
         st.header("ESG Report Comparison Tool")
         st.markdown(
             "Upload your transition plan or ESG report PDF to analyze how well it aligns with sustainability frameworks. "
-            "Uses **spacy-universal-sentence-encoder** with `nlp.similarity()` - the exact same method from the Jupyter notebook."
+            "Uses **sentence-transformers** with cosine similarity for semantic matching."
         )
         
         col1, col2 = st.columns([1, 1])
@@ -850,7 +852,7 @@ def main():
                 else:
                     with st.spinner("Loading model..."):
                         try:
-                            nlp = load_nlp_model()
+                            model = load_model()
                             st.success("Model loaded!")
                         except Exception as e:
                             st.error(f"Failed to load model: {e}")
