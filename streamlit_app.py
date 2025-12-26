@@ -1,8 +1,6 @@
 """
 Sustainability Framework Analyzer - Streamlit App
 Deploy to Streamlit Cloud for free public access.
-
-Uses sentence-transformers for semantic similarity calculation.
 """
 
 import streamlit as st
@@ -11,7 +9,8 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from io import BytesIO
-from sentence_transformers import SentenceTransformer, util
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
 # Page config
 st.set_page_config(
@@ -487,10 +486,12 @@ FRAMEWORK_REQUIREMENTS = {
 
 @st.cache_resource
 def load_model():
-    """Load the sentence transformer model (cached)"""
-    # Using all-mpnet-base-v2 - high quality semantic similarity model
-    # Alternative: 'all-MiniLM-L6-v2' for faster but slightly less accurate results
-    return SentenceTransformer('all-mpnet-base-v2')
+    """Load the TF-IDF vectorizer (cached)"""
+    return TfidfVectorizer(
+        stop_words='english',
+        ngram_range=(1, 2),
+        max_features=10000
+    )
 
 
 def extract_text_from_pdf(pdf_file):
@@ -511,15 +512,10 @@ def extract_text_from_pdf(pdf_file):
 
 def document_similarity(text_list, selected_frameworks, progress_bar=None):
     """
-    Calculate similarity using sentence-transformers.
-    Uses cosine similarity between embeddings (same approach as spacy nlp.similarity).
+    Calculate similarity using TF-IDF and cosine similarity.
+    Compares each document page against each framework requirement.
     """
-    model = load_model()
-    
     results = []
-    
-    # Pre-compute document embeddings
-    doc_embeddings = model.encode(text_list, convert_to_tensor=True, show_progress_bar=False)
     
     # Count total steps for progress
     total_steps = sum(
@@ -539,18 +535,29 @@ def document_similarity(text_list, selected_frameworks, progress_bar=None):
         for topic, requirements in topics.items():
             similarities = []
             
-            # Encode all requirements for this topic
-            req_embeddings = model.encode(requirements, convert_to_tensor=True, show_progress_bar=False)
+            # Combine all texts for vectorization
+            all_texts = requirements + text_list
             
-            # Calculate cosine similarity between each requirement and each document page
-            for req_emb in req_embeddings:
-                for doc_emb in doc_embeddings:
-                    # Cosine similarity (same as nlp.similarity() in spacy)
-                    similarity = util.cos_sim(req_emb, doc_emb).item()
-                    similarities.append(similarity)
-            
-            # Calculate mean similarity for this topic
-            avg_similarity = sum(similarities) / len(similarities) if similarities else 0
+            # Create TF-IDF vectors
+            vectorizer = TfidfVectorizer(stop_words='english', ngram_range=(1, 2))
+            try:
+                tfidf_matrix = vectorizer.fit_transform(all_texts)
+            except ValueError:
+                # If vectorization fails (e.g., empty texts), skip
+                avg_similarity = 0.0
+            else:
+                # Split into requirement vectors and document vectors
+                req_vectors = tfidf_matrix[:len(requirements)]
+                doc_vectors = tfidf_matrix[len(requirements):]
+                
+                # Calculate cosine similarity between each requirement and each document page
+                similarity_matrix = cosine_similarity(req_vectors, doc_vectors)
+                
+                # Flatten and get all pairwise similarities
+                similarities = similarity_matrix.flatten().tolist()
+                
+                # Calculate mean similarity for this topic
+                avg_similarity = sum(similarities) / len(similarities) if similarities else 0
             
             results.append({
                 "framework": framework,
@@ -783,7 +790,7 @@ def main():
         st.header("ESG Report Comparison Tool")
         st.markdown(
             "Upload your transition plan or ESG report PDF to analyze how well it aligns with sustainability frameworks. "
-            "Uses **sentence-transformers** with cosine similarity for semantic matching."
+            "Uses **TF-IDF vectorization** with cosine similarity for text matching."
         )
         
         col1, col2 = st.columns([1, 1])
@@ -850,14 +857,6 @@ def main():
                 elif not uploaded_file and not pasted_text:
                     st.error("Please upload a PDF or paste text")
                 else:
-                    with st.spinner("Loading model..."):
-                        try:
-                            model = load_model()
-                            st.success("Model loaded!")
-                        except Exception as e:
-                            st.error(f"Failed to load model: {e}")
-                            st.stop()
-                    
                     # Extract text
                     if uploaded_file:
                         with st.spinner("Extracting text from PDF..."):
